@@ -95,7 +95,7 @@ const pStatic = function(dir,opts){
             }
         }
 
-        function sendFile(data){ console.log("我是文件"+typeof data)
+        function sendFile(data){
              //设置响应码
             let status = '200'
             if(ifCacheHit){
