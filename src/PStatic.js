@@ -1,7 +1,8 @@
-let fs = require('fs')
-let url = require('url')
-let crypto = require('crypto')
-let pStatic = function(dir,opts){
+const fs = require('fs')
+const url = require('url')
+const crypto = require('crypto')
+const utils = require('./utils')
+const pStatic = function(dir,opts){
     let defaultOpt = {
         htmlNoCache:false,//支持配置html、htm后缀文件配置无缓存 true 表示禁用缓存
         maxAge:0,
@@ -12,40 +13,9 @@ let pStatic = function(dir,opts){
     opts = Object.assign(defaultOpt,opts)
     //支持强缓存时间带单位
     if(opts.maxAge != 0){ 
-        
-        ((time)=>{
-            let unit = time.charAt(time.length - 1)
-            let val = +time.substr(0,time.length-1)
-            switch (unit){
-                case 's':
-                   opts.maxAge = val;
-                   break;
-                case 'm':
-                   opts.maxAge = val * 60;
-                   break;
-                case 'h':
-                    opts.maxAge = val * 3600;
-                   break;
-                case 'd':
-                   opts.maxAge = val * 3600 * 24;
-                   break;
-                case 'M':
-                   opts.maxAge = val * 3600 * 24 * 30;
-                   break;
-                case 'y':
-                   opts.maxAge = val * 3600 * 24 * 30 * 365;
-                   break;
-            }
-        })(opts.maxAge)
+        opts.maxAge = utils.unitToSecond(opts.maxAge) //时间单位转换
     }
-    /*
-    //express sendFile方法基本满足要求,4.*版本目前不支持etag配置
-    let a = (req,res,next)=>{
-        let option = Object.assign({},opts)
-        option.maxAge = option.maxAge * 1000;
-        let target = url.parse(req.url).pathname
-        res.sendFile(__dirname+dir+target,option)
-    }*/
+    
     function myFun(req,res,next){
         let target = url.parse(req.url).pathname;//取当前请求路径
         const typeArr = ['htm','html','css','js'];//分类别设置res头
@@ -67,9 +37,10 @@ let pStatic = function(dir,opts){
         }
         var lastModifyTime = ''
         var etag = ''
+        let ifCacheHit = false;//是否命中304缓存
         if((fileType === 'html' || fileType === 'htm') && opts.htmlNoCache){
             header['Cache-Control'] = 'no-cache'
-            sendFile()
+            sendFile('')
         }else{
             let p1 = new Promise(function(resolve,reject){
                 if(opts.lastModify){
@@ -80,11 +51,14 @@ let pStatic = function(dir,opts){
                         else{
                             lastModifyTime = stats.mtime.toGMTString()
                             header['Last-Modified'] = lastModifyTime
+                            if(lastModifyTime === req.headers['if-modified-since']){
+                                ifCacheHit = true;
+                            }
                         }
-                        resolve()
+                        resolve('')
                     }); 
                 }else{
-                    resolve()
+                    resolve('')
                 }
             })
             let p2 = new Promise(function(resolve,reject){
@@ -96,38 +70,54 @@ let pStatic = function(dir,opts){
                         else{
                             etag = crypto.createHash('md5').update(data).digest('hex')
                             header['Etag'] = etag
+                            if(etag === req.headers['if-none-match']){
+                                ifCacheHit = true;
+                            }
                         }
-                        resolve()
+                        resolve(data)
                     })  
                 }else{
-                    resolve()
+                    resolve('')
                 }
             })
-            Promise.all([p1,p2]).then(()=>{
-                sendFile()
-            })
-             
+            if(opts.lastModify && opts.etag){
+                Promise.race([p1,p2]).then((data)=>{
+                    sendFile(data)
+                }).catch((err)=>{
+                    console.log(err)
+                })
+            }else{
+                Promise.all([p1,p2]).then((data)=>{
+                    sendFile(data[0] || data[1])
+                }).catch((err)=>{
+                    console.log(err)
+                })
+            }
         }
-        //根据配置项设置响应对象头
 
-        function sendFile(){
+        function sendFile(data){ console.log("我是文件"+typeof data)
              //设置响应码
             let status = '200'
-            if(!(opts.htmlNoCache && (fileType == 'html'|| fileType == '.htm')) && (opts.lastModify && lastModifyTime === req.headers['if-modified-since'] || opts.etag && etag === req.headers['if-none-match'])){
+            if(ifCacheHit){
                 status = '304'
                 res.writeHead(status,header)
                 res.end()
             }else{
-                fs.readFile('.'+dir+target,function(err,data){
-                    if (err) {
-                        res.writeHead('404')
-                        res.end('资源未找到')
-                    } else {
-                        res.writeHead(status,header)
-                        res.end(data)
-                    }
-                    
-                })
+                if(data != ''){//如果生成etag的时候读文件成功就不需要再次读取文件内容
+                    res.writeHead(status,header)
+                    res.end(data)
+                }else{
+                    fs.readFile('.'+dir+target,function(err,data){
+                        if (err) {
+                            res.writeHead('404')
+                            res.end('资源未找到')
+                        } else {
+                            res.writeHead(status,header)
+                            res.end(data)
+                        }
+                        
+                    })
+                }
             }
             
         } 
